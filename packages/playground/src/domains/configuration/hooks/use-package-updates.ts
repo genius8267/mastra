@@ -1,5 +1,6 @@
 import { useQueries } from '@tanstack/react-query';
 import semver from 'semver';
+import { isStudioOffline } from '@/lib/studio-network';
 
 export interface PackageInfo {
   name: string;
@@ -86,9 +87,22 @@ async function fetchPackageInfo(packageName: string, installedVersion: string): 
   }
 }
 
+function installedPackageInfo(pkg: PackageInfo): PackageUpdateInfo {
+  const prerelease = semver.prerelease(pkg.version);
+  return {
+    ...pkg,
+    latestVersion: null,
+    isOutdated: false,
+    isDeprecated: false,
+    prereleaseTag: prerelease ? String(prerelease[0]) : null,
+    targetPrereleaseTag: null,
+  };
+}
+
 export function usePackageUpdates(packages: PackageInfo[]) {
+  const updatesEnabled = !isStudioOffline();
   const queries = useQueries({
-    queries: packages.map(pkg => ({
+    queries: (updatesEnabled ? packages : []).map(pkg => ({
       queryKey: ['package-update', pkg.name, pkg.version],
       queryFn: () => fetchPackageInfo(pkg.name, pkg.version),
       staleTime: 1000 * 60 * 60, // 1 hour - latest versions don't change often
@@ -97,7 +111,9 @@ export function usePackageUpdates(packages: PackageInfo[]) {
   });
 
   const isLoading = queries.some(q => q.isLoading);
-  const packageUpdates = queries.map(q => q.data).filter((p): p is PackageUpdateInfo => p !== undefined);
+  const packageUpdates = updatesEnabled
+    ? queries.map(q => q.data).filter((p): p is PackageUpdateInfo => p !== undefined)
+    : packages.map(pkg => installedPackageInfo(pkg));
 
   // Only compute counts when all queries are complete to avoid incrementing badges
   const allComplete = !isLoading && packageUpdates.length === packages.length;
@@ -106,6 +122,7 @@ export function usePackageUpdates(packages: PackageInfo[]) {
 
   return {
     packages: packageUpdates,
+    updatesEnabled,
     isLoading,
     outdatedCount,
     deprecatedCount,

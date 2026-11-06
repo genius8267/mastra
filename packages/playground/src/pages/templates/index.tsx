@@ -6,13 +6,20 @@ import { PackageIcon } from 'lucide-react';
 import { useState } from 'react';
 import { Link } from 'react-router';
 import { PageBreadcrumbs } from '@/components/ui/page-breadcrumbs';
+import { OfflineTemplates } from '@/domains/templates/offline-templates';
 import { TemplatesList } from '@/domains/templates/templates-list';
 import { TemplatesTools } from '@/domains/templates/templates-tools';
+import { isStudioOffline } from '@/lib/studio-network';
 import { cn } from '@/lib/utils';
 
 const crumbs = [{ id: 'templates', label: 'Templates' }];
 
 export default function Templates() {
+  if (isStudioOffline()) return <OfflineTemplates />;
+  return <HostedTemplates />;
+}
+
+function HostedTemplates() {
   const { data, isLoading } = useMastraTemplates();
   const { templates, tags, providers } = data ?? { templates: [], tags: [], providers: [] };
   const [selectedTag, setSelectedTag] = useState<string>('all');

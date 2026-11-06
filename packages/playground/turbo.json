@@ -12,11 +12,13 @@
     "build:lib": {
       "dependsOn": ["^build"],
       "outputs": ["dist/**", "!dist/docs/**"],
-      "inputs": ["$TURBO_DEFAULT$", "./vite.config.ts"]
+      "inputs": ["$TURBO_DEFAULT$", "./vite.config.ts"],
+      "env": ["VITE_MASTRA_STUDIO_OFFLINE"]
     },
     "build": {
       "dependsOn": ["^build", "typecheck"],
-      "outputs": ["dist/**"]
+      "outputs": ["dist/**"],
+      "env": ["VITE_MASTRA_STUDIO_OFFLINE"]
     }
   }
 }
