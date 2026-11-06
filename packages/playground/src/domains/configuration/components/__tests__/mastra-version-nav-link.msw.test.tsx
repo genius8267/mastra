@@ -4,7 +4,7 @@ import { MastraReactProvider } from '@mastra/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { http, HttpResponse } from 'msw';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { MastraVersionNavLink } from '../mastra-version-nav-link';
 import {
@@ -40,9 +40,34 @@ const mockRegistry = (responses: Record<string, NpmRegistryResponse>) =>
     return HttpResponse.json(responses[packageName]);
   });
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  vi.unstubAllEnvs();
+});
 
 describe('MastraVersionNavLink', () => {
+  describe('when the Studio build uses offline mode', () => {
+    it('lists installed versions without contacting the registry or claiming update readiness', async () => {
+      vi.stubEnv('VITE_MASTRA_STUDIO_OFFLINE', 'true');
+      const registryRequests = vi.fn();
+      server.use(
+        http.get(`${BASE_URL}/api/system/packages`, () => HttpResponse.json(systemPackagesWithUpdates)),
+        http.get('https://registry.npmjs.org/:packageName', () => {
+          registryRequests();
+          return HttpResponse.json(currentPackageRegistryResponse);
+        }),
+      );
+      renderVersionNavLink();
+      fireEvent.click(await screen.findByRole('button', { name: /Version 1\.0\.0/ }));
+      expect(await screen.findByText('Registry checks are disabled in this Studio build.')).toBeTruthy();
+      expect(screen.getByText('@mastra/core')).toBeTruthy();
+      expect(screen.getByText('@mastra/memory')).toBeTruthy();
+      expect(screen.queryByText('Up to date')).toBeNull();
+      expect(screen.queryByText('Update with')).toBeNull();
+      expect(registryRequests).not.toHaveBeenCalled();
+    });
+  });
+
   describe('when installed packages include outdated and deprecated versions', () => {
     it('flags the row and lists both in the popover with an update command', async () => {
       server.use(

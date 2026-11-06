@@ -33,6 +33,7 @@ export const MastraPackagesPanel = ({ version }: MastraPackagesPanelProps) => {
   const {
     packages,
     isLoading: isLoadingUpdates,
+    updatesEnabled,
     outdatedCount,
     deprecatedCount,
   } = usePackageUpdates(installedPackages);
@@ -49,6 +50,7 @@ export const MastraPackagesPanel = ({ version }: MastraPackagesPanelProps) => {
             Mastra {version}
           </Txt>
           <UpdateStatus
+            updatesEnabled={updatesEnabled}
             isLoadingUpdates={isLoadingUpdates}
             outdatedCount={outdatedCount}
             deprecatedCount={deprecatedCount}
@@ -90,14 +92,19 @@ export const MastraPackagesPanel = ({ version }: MastraPackagesPanelProps) => {
 };
 
 function UpdateStatus({
+  updatesEnabled,
   isLoadingUpdates,
   outdatedCount,
   deprecatedCount,
 }: {
+  updatesEnabled: boolean;
   isLoadingUpdates: boolean;
   outdatedCount: number;
   deprecatedCount: number;
 }) {
+  if (!updatesEnabled) {
+    return <p className="mt-0.5 text-meta text-muted-foreground">Registry checks are disabled in this Studio build.</p>;
+  }
   if (isLoadingUpdates) {
     return (
       <p className="mt-0.5 flex items-center gap-1.5 text-meta text-muted-foreground">

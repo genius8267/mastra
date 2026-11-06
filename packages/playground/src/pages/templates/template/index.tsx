@@ -16,14 +16,21 @@ import { useEffect, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router';
 import { PageBreadcrumbs } from '@/components/ui/page-breadcrumbs';
 import { decodeRouteParam } from '@/domains/navigation/crumbs';
+import { OfflineTemplates } from '@/domains/templates/offline-templates';
 import { TemplateFailure } from '@/domains/templates/template-failure';
 import { TemplateForm } from '@/domains/templates/template-form';
 import { TemplateInfo } from '@/domains/templates/template-info';
 import { TemplateInstallation } from '@/domains/templates/template-installation';
 import { TemplateSuccess } from '@/domains/templates/template-success';
+import { isStudioOffline } from '@/lib/studio-network';
 import { cn } from '@/lib/utils';
 
 export default function Template() {
+  if (isStudioOffline()) return <OfflineTemplates />;
+  return <HostedTemplate />;
+}
+
+function HostedTemplate() {
   const { templateSlug } = useParams() as { templateSlug: string };
   const crumbs = [
     { id: 'templates', label: 'Templates', to: '/templates' },
