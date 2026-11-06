@@ -1,0 +1,13 @@
+{
+  "name": "@intunelabs/owner-docs-lint",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Owner stand-in command. The upstream private docs lint does not run.",
+  "license": "UNLICENSED",
+  "exports": {
+    "./remark-preset": "./remark-preset.mjs"
+  },
+  "bin": {
+    "lint-docs": "cli.cjs"
+  }
+}
