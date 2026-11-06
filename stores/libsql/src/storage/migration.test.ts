@@ -1,8 +1,15 @@
+import { mkdtemp } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { createClient } from '@libsql/client';
 import type { Client } from '@libsql/client';
 import { MastraError } from '@mastra/core/error';
+import { Mastra } from '@mastra/core/mastra';
 import {
   OLD_SPAN_SCHEMA,
+  EXPERIMENTS_SCHEMA,
+  TABLE_EXPERIMENTS,
   TABLE_SPANS,
   TABLE_SCHEMAS,
   TABLE_THREADS,
@@ -10,6 +17,7 @@ import {
 } from '@mastra/core/storage';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { LibSQLDB } from './db';
+import { ExperimentsLibSQL } from './domains/experiments';
 import { LibSQLStore } from './index';
 
 /**
@@ -986,6 +994,205 @@ describe('LibSQL Migration Required Error', () => {
       expect(uniqueIndex).toBeDefined();
     } finally {
       testClient.close();
+    }
+  });
+});
+
+async function legacyExperimentFixture(requiredTargets: Array<'targetType' | 'targetId'>) {
+  const root = await mkdtemp(join(tmpdir(), 'libsql-experiment-targets-'));
+  const url = pathToFileURL(join(root, 'legacy.db')).href;
+  const client = createClient({ url });
+  const db = new LibSQLDB({ client });
+  const schema = Object.fromEntries(
+    Object.entries(EXPERIMENTS_SCHEMA).map(([name, column]) => [
+      name,
+      { ...column, ...(requiredTargets.includes(name as 'targetType' | 'targetId') ? { nullable: false } : {}) },
+    ]),
+  );
+  await db.createTable({ tableName: TABLE_EXPERIMENTS, schema });
+  const old = new ExperimentsLibSQL({ client });
+  for (const id of ['legacy-one', 'legacy-two']) {
+    await old.createExperiment({
+      id,
+      name: id,
+      targetType: 'agent',
+      targetId: id,
+      totalItems: 2,
+      metadata: { marker: 'NOT NULL, retained Ω', values: [1, null, 'two'] },
+    });
+  }
+  await client.execute(`UPDATE "${TABLE_EXPERIMENTS}" SET rowid = 9 WHERE id = 'legacy-two'`);
+  await client.execute(
+    `ALTER TABLE "${TABLE_EXPERIMENTS}" ADD COLUMN "keptCustom" TEXT NOT NULL DEFAULT 'NOT NULL, unchanged' CHECK (length("keptCustom") > 0)`,
+  );
+  await client.execute(
+    `CREATE UNIQUE INDEX "ea29_retained_index" ON "${TABLE_EXPERIMENTS}" ("targetId") WHERE "targetType" IS NOT NULL`,
+  );
+  await client.execute('CREATE TABLE "ea29_trigger_history" ("id" TEXT)');
+  await client.execute(
+    `CREATE TRIGGER "ea29_retained_trigger" AFTER UPDATE OF "targetId" ON "${TABLE_EXPERIMENTS}" BEGIN INSERT INTO "ea29_trigger_history" ("id") VALUES (NEW.id); END`,
+  );
+  await client.execute(`CREATE TABLE "${TABLE_EXPERIMENTS}__nullable_rebuild" ("marker" TEXT)`);
+  await client.execute(`INSERT INTO "${TABLE_EXPERIMENTS}__nullable_rebuild" VALUES ('retained unrelated table')`);
+  const rows = await client.execute(`SELECT rowid AS "migrationRowid", * FROM "${TABLE_EXPERIMENTS}" ORDER BY id`);
+  const index = await client.execute(
+    `SELECT name, sql FROM sqlite_master WHERE type = 'index' AND name = 'ea29_retained_index'`,
+  );
+  return { client, url, rows: rows.rows, index: index.rows };
+}
+
+describe('LibSQL experiment target compatibility', () => {
+  const legacyTargets: Array<Array<'targetType' | 'targetId'>> = [
+    ['targetType'],
+    ['targetId'],
+    ['targetType', 'targetId'],
+  ];
+  it.each(legacyTargets.map(targets => ({ targets })))(
+    'retains older experiments and accepts caller-driven experiments with $targets constraints',
+    async ({ targets }) => {
+      const fixture = await legacyExperimentFixture(targets);
+      const storage = new LibSQLStore({ id: 'legacy-targets', url: fixture.url, disableInit: true });
+      try {
+        await storage.init();
+        const mastra = new Mastra({ storage });
+        const dataset = await mastra.datasets.create({ name: 'Synthetic target-less ingestion' });
+        await dataset.addItem({ input: { marker: 'synthetic-ea29' } });
+        await expect(
+          dataset.createExperiment({ id: 'caller-driven', name: 'Synthetic create-only' }),
+        ).resolves.toMatchObject({ experimentId: 'caller-driven', totalItems: 1 });
+        const retained = await fixture.client.execute(
+          `SELECT rowid AS "migrationRowid", * FROM "${TABLE_EXPERIMENTS}" WHERE id LIKE 'legacy-%' ORDER BY id`,
+        );
+        expect(retained.rows).toEqual(fixture.rows);
+        const index = await fixture.client.execute(
+          `SELECT name, sql FROM sqlite_master WHERE type = 'index' AND name = 'ea29_retained_index'`,
+        );
+        expect(index.rows).toEqual(fixture.index);
+        const columns = await fixture.client.execute(`PRAGMA table_info("${TABLE_EXPERIMENTS}")`);
+        expect(
+          columns.rows.filter(row => ['targetType', 'targetId'].includes(String(row.name))).map(row => row.notnull),
+        ).toEqual([0, 0]);
+        await fixture.client.execute(
+          `UPDATE "${TABLE_EXPERIMENTS}" SET "targetId" = "targetId" WHERE id = 'legacy-one'`,
+        );
+        expect((await fixture.client.execute('SELECT id FROM "ea29_trigger_history"')).rows).toEqual([
+          { id: 'legacy-one' },
+        ]);
+        expect(
+          (await fixture.client.execute(`SELECT marker FROM "${TABLE_EXPERIMENTS}__nullable_rebuild"`)).rows,
+        ).toEqual([{ marker: 'retained unrelated table' }]);
+      } finally {
+        await storage.close();
+        fixture.client.close();
+      }
+    },
+  );
+
+  it('leaves a current nullable table and its defaults untouched', async () => {
+    const fixture = await legacyExperimentFixture([]);
+    try {
+      const before = await fixture.client.execute(
+        `SELECT sql, rootpage FROM sqlite_master WHERE name = '${TABLE_EXPERIMENTS}'`,
+      );
+      await new ExperimentsLibSQL({ client: fixture.client }).init();
+      const after = await fixture.client.execute(
+        `SELECT sql, rootpage FROM sqlite_master WHERE name = '${TABLE_EXPERIMENTS}'`,
+      );
+      expect(after.rows).toEqual(before.rows);
+      expect(
+        (await fixture.client.execute(`SELECT rowid AS "migrationRowid", * FROM "${TABLE_EXPERIMENTS}" ORDER BY id`))
+          .rows,
+      ).toEqual(fixture.rows);
+    } finally {
+      fixture.client.close();
+    }
+  });
+
+  it('does not rebuild the migrated table on a second init', async () => {
+    const fixture = await legacyExperimentFixture(['targetType', 'targetId']);
+    try {
+      const store = new ExperimentsLibSQL({ client: fixture.client });
+      await store.init();
+      const before = await fixture.client.execute('PRAGMA schema_version');
+      const table = await fixture.client.execute(
+        `SELECT sql, rootpage FROM sqlite_master WHERE name = '${TABLE_EXPERIMENTS}'`,
+      );
+      await store.init();
+      expect((await fixture.client.execute('PRAGMA schema_version')).rows).toEqual(before.rows);
+      expect(
+        (await fixture.client.execute(`SELECT sql, rootpage FROM sqlite_master WHERE name = '${TABLE_EXPERIMENTS}'`))
+          .rows,
+      ).toEqual(table.rows);
+      expect(
+        (await fixture.client.execute(`SELECT rowid AS "migrationRowid", * FROM "${TABLE_EXPERIMENTS}" ORDER BY id`))
+          .rows,
+      ).toEqual(fixture.rows);
+    } finally {
+      fixture.client.close();
+    }
+  });
+
+  it('rolls back rows, constraints, indexes and triggers when index restoration fails', async () => {
+    const fixture = await legacyExperimentFixture(['targetType', 'targetId']);
+    let injected = false;
+    const failingClient = new Proxy(fixture.client, {
+      get(target, property) {
+        if (property === 'transaction')
+          return async (mode?: Parameters<Client['transaction']>[0]) => {
+            const transaction = await target.transaction(mode);
+            return new Proxy(transaction, {
+              get(tx, key) {
+                if (key === 'execute')
+                  return async (statement: Parameters<typeof tx.execute>[0]) => {
+                    const sql = typeof statement === 'string' ? statement : statement.sql;
+                    if (/CREATE.*INDEX/i.test(sql) && sql.includes('ea29_retained_index')) {
+                      injected = true;
+                      // The real database rejects this statement after the old table was dropped.
+                      return tx.execute('SELECT * FROM "ea29_injected_missing_table"');
+                    }
+                    return tx.execute(statement);
+                  };
+                const value = Reflect.get(tx, key, tx);
+                return typeof value === 'function' ? value.bind(tx) : value;
+              },
+            });
+          };
+        const value = Reflect.get(target, property, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    try {
+      const definition = await fixture.client.execute(
+        `SELECT sql FROM sqlite_master WHERE name = '${TABLE_EXPERIMENTS}'`,
+      );
+      await expect(new ExperimentsLibSQL({ client: failingClient }).init()).rejects.toThrow(
+        'ea29_injected_missing_table',
+      );
+      expect(injected).toBe(true);
+      expect(
+        (await fixture.client.execute(`SELECT rowid AS "migrationRowid", * FROM "${TABLE_EXPERIMENTS}" ORDER BY id`))
+          .rows,
+      ).toEqual(fixture.rows);
+      expect(
+        (await fixture.client.execute(`SELECT sql FROM sqlite_master WHERE name = '${TABLE_EXPERIMENTS}'`)).rows,
+      ).toEqual(definition.rows);
+      expect(
+        (
+          await fixture.client.execute(
+            "SELECT name, sql FROM sqlite_master WHERE type = 'index' AND name = 'ea29_retained_index'",
+          )
+        ).rows,
+      ).toEqual(fixture.index);
+      await fixture.client.execute(`UPDATE "${TABLE_EXPERIMENTS}" SET "targetId" = "targetId" WHERE id = 'legacy-one'`);
+      expect((await fixture.client.execute('SELECT id FROM "ea29_trigger_history"')).rows).toEqual([
+        { id: 'legacy-one' },
+      ]);
+      const tables = await fixture.client.execute("SELECT name FROM sqlite_master WHERE type = 'table'");
+      expect(tables.rows.filter(row => /^mastra_experiments__nullable_[a-f0-9]{32}$/.test(String(row.name)))).toEqual(
+        [],
+      );
+    } finally {
+      fixture.client.close();
     }
   });
 });
