@@ -43,6 +43,7 @@ import { buildSelectColumns } from '../../db/utils';
 import { withClientWriteLock } from '../../db/write-lock';
 import { cutoffFor, runBatchedDelete } from '../../retention';
 import { buildScopedWhere, tenancyWhere } from '../utils';
+import { relaxExperimentTargetNullability } from './target-nullability';
 
 const DEFAULT_PRUNE_BATCH_SIZE = 1000;
 
@@ -146,6 +147,8 @@ export class ExperimentsLibSQL extends ExperimentsStorage {
         'attempt',
       ],
     });
+
+    await relaxExperimentTargetNullability(this.#client);
 
     // Indexes — idempotent, safe to run on every init
     await this.#client.batch(
