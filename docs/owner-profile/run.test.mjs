@@ -134,3 +134,28 @@ test('the lint compatibility command discloses its stand-in behavior', () => {
   assert.match(result.stdout, /Owner stand-in/)
   assert.match(result.stdout, /No upstream lint ran/)
 })
+
+test('disabled chat providers preserve docs children and do not open a chat', async () => {
+  const { DocsChatProvider, KapaChatProvider, useDocsChat } = await import('./standins/kapa/client.mjs')
+  const children = { publicDocs: 'The rendered page body remains present.' }
+  assert.equal(DocsChatProvider({ children }), children)
+  assert.equal(KapaChatProvider({ children }), children)
+  const chat = useDocsChat()
+  assert.equal(chat.triggerRef.current, null)
+  assert.equal(chat.toggle(), undefined)
+  assert.equal(chat.triggerRef.current, null)
+})
+
+test('owner build aliases disable search without replacing unrelated theme modules', async () => {
+  const { default: compatibility } = await import('./compatibility.mjs')
+  const input = { resolve: { alias: { '@theme/SearchBar': '/upstream/search', '@theme/DocItem': '/upstream/docs' } } }
+  const result = compatibility().configureWebpack(input)
+  assert.equal(result.mergeStrategy['resolve.alias'], 'replace')
+  assert.equal(result.resolve.alias['@theme/DocItem'], '/upstream/docs')
+  assert.equal(result.resolve.alias['@theme/SearchBar'], undefined)
+  assert.ok(result.resolve.alias['@theme/SearchBar$'].endsWith('/null-search.mjs'))
+  assert.deepEqual(input.resolve.alias, { '@theme/SearchBar': '/upstream/search', '@theme/DocItem': '/upstream/docs' })
+  const { default: Search, CustomSearch } = await import('./null-search.mjs')
+  assert.equal(Search({}), null)
+  assert.equal(CustomSearch({}), null)
+})

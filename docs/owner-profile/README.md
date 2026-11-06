@@ -11,7 +11,9 @@ It uses owner-authored stand-ins, not recovered upstream implementations.
 
 The plugin factories expose only Docusaurus-required names. They add no hooks, routes, themes, scripts, styles, services or content.
 The lint command prints its owner-stand-in behavior. Exit 0 means that compatibility command completed, not that upstream private lint ran.
-All stand-ins refuse execution without `MASTRA_OWNER_DOCS_PROFILE=1`.
+Build-time factories and lint commands refuse execution without `MASTRA_OWNER_DOCS_PROFILE=1`.
+Empty CSS and transparent client providers satisfy imports in the unchanged site theme. They create no hosted chat or search behavior.
+An owner-only config adapter aliases search components to null renderers. It changes no content producer or default config file.
 
 ## Source and configuration
 
@@ -38,7 +40,7 @@ MASTRA_OWNER_DOCS_PROFILE=1 node docs/owner-profile/run.mjs build
 
 The lock action resolves a new profile graph. Inspect that graph before installation and retain its lockfile hash.
 The install action requires the profile lock and uses `--frozen-lockfile`.
-The build action runs the native `mastra-docs` build with dependency-status refusal enabled.
+The build action runs only the native `mastra-docs` build, with the owner config adapter and dependency-status refusal enabled.
 
 The unmodified docs configuration still registers the native llms plugin.
 Docusaurus renders HTML before that plugin generates `docs/build/llms-manifest.json` and the individual llms files.
