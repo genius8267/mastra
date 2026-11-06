@@ -258,7 +258,7 @@ export async function runOwnerDocs(action, inherited = process.env) {
           ]
         : action === 'install'
           ? [...common, 'install', '--frozen-lockfile', '--prefer-offline', '--network-concurrency=8']
-          : [...common, 'run', 'build']
+          : ['corepack', 'pnpm', '--filter', 'mastra-docs', 'run', 'build']
     if (action === 'build') {
       await archiveOutput(path.join(ROOT, 'docs/build'), state, 'previous-docs-build')
       await archiveOutput(path.join(ROOT, 'docs/.docusaurus'), state, 'previous-docusaurus')
