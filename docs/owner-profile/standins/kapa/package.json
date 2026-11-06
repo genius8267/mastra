@@ -1,0 +1,24 @@
+{
+  "name": "@intunelabs/owner-docs-kapa",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Owner-authored no-op replacement for unavailable hosted docs chat UI.",
+  "license": "UNLICENSED",
+  "main": "index.cjs",
+  "types": "index.d.ts",
+  "style": "empty.css",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "style": "./empty.css",
+      "default": "./index.cjs"
+    },
+    "./client": {
+      "types": "./client.d.ts",
+      "default": "./client.mjs"
+    }
+  },
+  "peerDependencies": {
+    "react": "^19.3.1"
+  }
+}

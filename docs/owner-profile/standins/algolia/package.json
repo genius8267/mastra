@@ -1,0 +1,17 @@
+{
+  "name": "@intunelabs/owner-docs-algolia",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Owner-authored no-op replacement for unavailable hosted docs search UI.",
+  "license": "UNLICENSED",
+  "main": "index.cjs",
+  "types": "index.d.ts",
+  "style": "empty.css",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "style": "./empty.css",
+      "default": "./index.cjs"
+    }
+  }
+}
