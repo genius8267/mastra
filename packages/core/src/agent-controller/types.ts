@@ -19,6 +19,14 @@ import type { Workspace, WorkspaceStatus } from '../workspace';
 import type { Session } from './session';
 import type { TaskItemSnapshot } from './tools';
 
+/** Request-local identity of a controller-created subagent. This is not an authorization binding. */
+export const AGENT_CONTROLLER_SUBAGENT_CONTEXT_KEY = 'mastra__agentControllerSubagent';
+
+export interface AgentControllerSubagentContext {
+  agentType: string;
+  forked: boolean;
+}
+
 // =============================================================================
 // Interval Handlers
 // =============================================================================

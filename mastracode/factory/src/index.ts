@@ -28,6 +28,7 @@ export type {
 } from './boards/index.js';
 export type { RuleCondition, RuleGroup, RuleOperator } from './rules/rule-group.js';
 export { MastraFactory } from './factory.js';
+export type { MastraCodeModelPolicy, MastraCodeModelRole } from '@mastra/code-sdk';
 export { waitForPendingFilesystemCapture } from './session/filesystem-capture.js';
 export type {
   MastraArgs,

@@ -11,6 +11,7 @@ import { loadSettings } from '../onboarding/settings.js';
 import { ANTHROPIC_PROMPT_CACHE_TTL } from '../providers/anthropic-prompt-cache.js';
 import type { MastraCodeState } from '../schema.js';
 import { getOmScope } from '../utils/project.js';
+import type { MastraCodeModelPolicy, MastraCodeModelRole } from './model-policy.js';
 import { canUseProvider, getActiveMemoryRoute, resolveModel } from './model.js';
 
 /**
@@ -111,11 +112,17 @@ function resolveOmRoleModelForRequest(
   role: 'observer' | 'reflector',
   requestContext: RequestContext,
   settingsPath?: string,
-  options?: { disableSettingsOmSeed?: boolean },
+  options?: { disableSettingsOmSeed?: boolean; modelPolicy?: MastraCodeModelPolicy },
+  policyRole: MastraCodeModelRole = role,
 ): 'auto' | ReturnType<typeof resolveModel> | MemoryModelRouteEntry[] {
   const controller = requestContext.get('controller') as AgentControllerRequestContext<MastraCodeState> | undefined;
   const state = controller?.getState() as MastraCodeState | undefined;
-  const resolveOptions = { remapForCodexOAuth: true, requestContext, anthropicPromptCacheScope: 'system' } as const;
+  const resolveOptions = {
+    remapForCodexOAuth: true,
+    requestContext,
+    anthropicPromptCacheScope: 'system',
+    ...(options?.modelPolicy ? { modelPolicy: options.modelPolicy, role: policyRole } : {}),
+  } as const;
   const factorySettingsContext = getFactoryMemorySettingsContext(requestContext);
   const isFactory = typeof state?.factoryProjectId === 'string';
 
@@ -126,6 +133,13 @@ function resolveOmRoleModelForRequest(
   };
   const useAuto = () => {
     requestContext.set(`om.${role}.selectionMode`, 'auto');
+    if (options?.modelPolicy) {
+      // Auto remains a role request to the host, not permission to select a native provider.
+      const modelId = getMainModelId(requestContext);
+      if (!modelId) throw new Error('Model policy requires a selected model for automatic memory.');
+      requestContext.set(`om.${role}.effectiveModelId`, modelId);
+      return resolveModel(modelId, resolveOptions);
+    }
     // These two keys are declared in the span-context allowlist
     // (`mastracode/sdk/src/index.ts`), so traces can report intent separately from
     // the effective concrete model without either being mistaken for a model ID.
@@ -161,7 +175,7 @@ function resolveOmRoleModelForRequest(
   if (routeMemory) {
     requestContext.set(`om.${role}.selectionMode`, 'model');
     requestContext.set(`om.${role}.effectiveModelId`, routeMemory[0]?.model.modelId);
-    return routeMemory.length === 1 ? routeMemory[0]!.model : routeMemory;
+    return options?.modelPolicy || routeMemory.length === 1 ? routeMemory[0]!.model : routeMemory;
   }
 
   const selection: unknown = state?.[`${role}ModelSelection`];
@@ -223,8 +237,11 @@ export function getDynamicMemory(
   storage: MastraCompositeStore,
   vector?: MastraVector,
   settingsPath?: string,
-  options?: { disableSettingsOmSeed?: boolean },
+  options?: { disableSettingsOmSeed?: boolean; modelPolicy?: MastraCodeModelPolicy },
 ) {
+  if (options?.modelPolicy !== undefined && typeof options.modelPolicy !== 'function') {
+    throw new Error('Model policy must be a function.');
+  }
   // Cache is scoped per storage instance (per getDynamicMemory call) so a
   // Memory bound to one storage is never reused after storage changes.
   let cachedMemory: Memory | null = null;
@@ -242,8 +259,10 @@ export function getDynamicMemory(
     resolveOmRoleModelForRequest('reflector', requestContext, settingsPath, options);
   // Routes the concrete model Memory's `'auto'` picks through Mastra Code's
   // credential-aware resolver, like every other Mastra Code model.
-  const resolveMemoryModel = (modelId: string, { requestContext }: { requestContext?: RequestContext }) =>
-    resolveModel(modelId, { remapForCodexOAuth: true, requestContext, anthropicPromptCacheScope: 'system' });
+  const resolveMemoryModel = (modelId: string, { requestContext }: { requestContext?: RequestContext }) => {
+    if (options?.modelPolicy) throw new Error('Model policy does not permit native automatic memory resolution.');
+    return resolveModel(modelId, { remapForCodexOAuth: true, requestContext, anthropicPromptCacheScope: 'system' });
+  };
 
   const resolveMemory = ({ requestContext }: { requestContext: RequestContext }) => {
     const controller = requestContext.get('controller') as AgentControllerRequestContext<MastraCodeState> | undefined;
@@ -322,7 +341,9 @@ export function getDynamicMemory(
             ? false
             : {
                 model: ({ requestContext }) => {
-                  const resolved = getObserverModel({ requestContext });
+                  const resolved = options?.modelPolicy
+                    ? resolveOmRoleModelForRequest('observer', requestContext, settingsPath, options, 'title')
+                    : getObserverModel({ requestContext });
                   if (resolved === 'auto') {
                     return resolveMemoryModel(
                       resolveAutoOMModelId(getMainModelId(requestContext), providerId =>
@@ -339,8 +360,8 @@ export function getDynamicMemory(
             ? false
             : {
                 enabled: true,
-                autoModels: MASTRACODE_AUTO_OM_MODELS,
-                canUseProvider,
+                autoModels: options?.modelPolicy ? {} : MASTRACODE_AUTO_OM_MODELS,
+                canUseProvider: options?.modelPolicy ? () => false : canUseProvider,
                 resolveModel: resolveMemoryModel,
                 temporalMarkers: true,
                 retrieval: vector ? { vector: true } : true,

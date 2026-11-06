@@ -14,7 +14,8 @@ import { createTool } from '../tools/tool';
 import { createWorkspaceTools } from '../workspace/tools/tools';
 
 import { isToolResultError } from './tool-result';
-import type { AgentControllerRequestContext, AgentControllerSubagent } from './types';
+import { AGENT_CONTROLLER_SUBAGENT_CONTEXT_KEY } from './types';
+import type { AgentControllerRequestContext, AgentControllerSubagent, AgentControllerSubagentContext } from './types';
 
 // `ask_user` is an agent-agnostic built-in tool. It is defined in
 // `../tools/builtin/ask-user` and re-exported here so the AgentController toolset and
@@ -185,7 +186,11 @@ Use this tool when:
       // Per-invocation state produced by either the forked or non-forked setup path.
       let subagentToRun: Agent;
       let resolvedModelId: string;
-      let subagentRequestContext: RequestContext | undefined;
+      const subagentRequestContext = new RequestContext(context?.requestContext?.entries());
+      subagentRequestContext.set(AGENT_CONTROLLER_SUBAGENT_CONTEXT_KEY, {
+        agentType,
+        forked: runAsForked,
+      } satisfies AgentControllerSubagentContext);
       let streamMemory: { thread: string; resource?: string } | undefined;
       let streamMaxSteps: number | undefined;
       let streamStopWhen: AgentControllerSubagent['stopWhen'];
@@ -258,7 +263,6 @@ Use this tool when:
         streamPrepareStep = undefined;
 
         if (context?.requestContext) {
-          subagentRequestContext = new RequestContext(context.requestContext.entries());
           if (controllerCtx) {
             // Point at the fork so inherited tools (recall, browser, OM, memory writes, etc.)
             // operate on the cloned thread instead of the active parent thread.
@@ -327,7 +331,6 @@ Use this tool when:
         // with no channels, so no output processor attaches and it never
         // renders to the chat platform.
         if (context?.requestContext) {
-          subagentRequestContext = new RequestContext(context.requestContext.entries());
           if (controllerCtx) {
             subagentRequestContext.set('controller', {
               ...controllerCtx,

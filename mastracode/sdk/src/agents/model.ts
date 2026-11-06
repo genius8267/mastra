@@ -1,4 +1,5 @@
 import type { ModelWithRetries } from '@mastra/core/agent';
+import { AGENT_CONTROLLER_SUBAGENT_CONTEXT_KEY } from '@mastra/core/agent-controller';
 import type { AgentControllerRequestContext } from '@mastra/core/agent-controller';
 import { ModelRouterLanguageModel } from '@mastra/core/llm';
 import type { GatewayLanguageModel, IdentifiedModelConfig, MastraModelGatewayInterface } from '@mastra/core/llm';
@@ -38,6 +39,8 @@ import {
   stripMastraGatewayPrefix,
 } from './mastracode-gateway.js';
 import type { MastraCodeGatewayOptions } from './mastracode-gateway.js';
+import { resolvePolicyModel } from './model-policy.js';
+import type { MastraCodeModelPolicy, MastraCodeModelRole } from './model-policy.js';
 
 export {
   getAnthropicApiKey,
@@ -172,8 +175,13 @@ export function resolveModel(
     remapForCodexOAuth?: boolean;
     requestContext?: RequestContext;
     anthropicPromptCacheScope?: AnthropicPromptCacheScope;
+    modelPolicy?: MastraCodeModelPolicy;
+    role?: MastraCodeModelRole;
   },
 ): ResolvedModel {
+  if (options?.modelPolicy !== undefined) {
+    return resolvePolicyModel(modelId, options.role ?? 'main', options.requestContext, options.modelPolicy);
+  }
   if (!hasCredentialTenantResolver()) return resolveModelForRequest(modelId, options);
   const createRequestModel = () => {
     const requestContext = options?.requestContext ? new RequestContext(options.requestContext.entries()) : undefined;
@@ -469,7 +477,11 @@ export function resolveRequestThinkingLevel(
 export function getDynamicModel(
   { requestContext }: { requestContext: RequestContext },
   settingsPath?: string,
-  { modeless = false, defaultThinkingLevel }: { modeless?: boolean; defaultThinkingLevel?: ThinkingLevelSetting } = {},
+  {
+    modeless = false,
+    defaultThinkingLevel,
+    modelPolicy,
+  }: { modeless?: boolean; defaultThinkingLevel?: ThinkingLevelSetting; modelPolicy?: MastraCodeModelPolicy } = {},
 ): IdentifiedModelConfig | ModelWithRetries[] {
   const controller = requestContext.get('controller') as AgentControllerRequestContext<any> | undefined;
   const state = controller?.getState?.() as
@@ -499,6 +511,12 @@ export function getDynamicModel(
       );
     }
     throw new Error('No model selected. Use /models to select a model first.');
+  }
+
+  if (modelPolicy !== undefined) {
+    // A policy owns provider selection and fallback. Do not prepare native credentials or routes.
+    const role = requestContext.get(AGENT_CONTROLLER_SUBAGENT_CONTEXT_KEY) ? 'subagent' : 'main';
+    return { model: resolvePolicyModel(modelId, role, requestContext, modelPolicy), id: modelId };
   }
 
   const thinkingLevel = resolveRequestThinkingLevel(
@@ -616,8 +634,9 @@ export function getActiveRouteMemoryModelId(
 export function getGoalJudgeModel(
   { requestContext }: { requestContext: RequestContext },
   settingsPath?: string,
+  modelPolicy?: MastraCodeModelPolicy,
 ): ResolvedModel | undefined {
   const judgeModelId = loadSettings(settingsPath).models.goalJudgeModel;
   if (!judgeModelId) return undefined;
-  return resolveModel(judgeModelId, { remapForCodexOAuth: true, requestContext });
+  return resolveModel(judgeModelId, { remapForCodexOAuth: true, requestContext, modelPolicy, role: 'main' });
 }

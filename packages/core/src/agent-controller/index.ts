@@ -31,7 +31,7 @@ export {
   taskUpdateTool,
   taskWriteTool,
 } from './tools';
-export { defaultDisplayState, defaultOMProgressState } from './types';
+export { AGENT_CONTROLLER_SUBAGENT_CONTEXT_KEY, defaultDisplayState, defaultOMProgressState } from './types';
 export type {
   ActiveSubagentState,
   ActiveToolState,
@@ -52,6 +52,7 @@ export type {
   AgentControllerSessionDeletedListener,
   AgentControllerStateSchema,
   AgentControllerSubagent,
+  AgentControllerSubagentContext,
   AgentControllerSubagentHistoryEntry,
   AgentControllerThread,
   AgentControllerThinkingLevel,

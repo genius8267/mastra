@@ -996,6 +996,12 @@ export class Agent<
     super({ component: RegisteredLogger.AGENT, rawConfig: config.rawConfig });
 
     this.#config = config;
+    if (config.resolveTitleModel !== undefined && typeof config.resolveTitleModel !== 'function') {
+      throw new Error('The title model resolver must be a function.');
+    }
+    if (config.allowInputProcessorOverrides !== undefined && typeof config.allowInputProcessorOverrides !== 'boolean') {
+      throw new Error('The input processor override setting must be a boolean.');
+    }
 
     this.name = config.name;
     this.id = config.id ?? config.name;
@@ -2548,6 +2554,9 @@ export class Agent<
     requestContext?: RequestContext,
     configuredProcessorOverrides?: InputProcessorOrWorkflow[],
   ): Promise<InputProcessorOrWorkflow[]> {
+    if (configuredProcessorOverrides !== undefined && this.#config.allowInputProcessorOverrides === false) {
+      throw new Error('Input processor overrides are disabled for this agent.');
+    }
     // Get configured input processors - use overrides if provided (from generate/stream options),
     // otherwise use agent constructor processors
     const configuredProcessors = configuredProcessorOverrides
@@ -4493,6 +4502,13 @@ export class Agent<
     instructions?: DynamicArgument<string>;
   } & Partial<ObservabilityContext>) {
     const observabilityContext = resolveObservabilityContext(rest);
+    if (this.#config.resolveTitleModel) {
+      const resolved = await this.#config.resolveTitleModel(model, { requestContext });
+      if (!resolved || (typeof resolved !== 'string' && typeof resolved !== 'object')) {
+        throw new Error('The title model resolver must return a model configuration.');
+      }
+      model = resolved;
+    }
     // need to use text, not object output or it will error for models that don't support structured output (eg Deepseek R1)
     const llm = await this.getLLM({ requestContext, model });
     // Register Mastra on the LLM (if any) so the inner agentic loop has access

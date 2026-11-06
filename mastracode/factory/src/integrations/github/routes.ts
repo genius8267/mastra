@@ -11,7 +11,7 @@
  * so the SPA can cleanly hide all GitHub UI.
  */
 
-import type { MountedMastraCode } from '@mastra/code-sdk';
+import type { MastraCodeModelPolicy, MountedMastraCode } from '@mastra/code-sdk';
 import { resolveModel } from '@mastra/code-sdk/agents/model';
 import { RequestContext } from '@mastra/core/request-context';
 import type { ApiRoute, IUserProvider } from '@mastra/core/server';
@@ -100,6 +100,7 @@ function loose(c: unknown): RouteContext {
 }
 
 export interface MountGithubRoutesOptions {
+  modelPolicy?: MastraCodeModelPolicy;
   /** Host auth seam — resolves the signed-in user/tenant for each request. */
   auth: RouteAuth;
   /** Optional user directory used to resolve session-owner display profiles. */
@@ -1173,6 +1174,7 @@ export function buildGithubRoutes(options: MountGithubRoutesOptions): ApiRoute[]
       users,
       controller,
       memorySettings,
+      modelPolicy: options.modelPolicy,
       emitAudit,
       sessionRetirement,
       workItems,
@@ -1280,9 +1282,9 @@ function createSessionNaming() {
  * mastracode's gateway: a bare id handed to core's model router looks for a
  * process env key instead of the caller's stored provider credentials.
  */
-function titleModel(modelId: string) {
+function titleModel(modelId: string, modelPolicy?: MastraCodeModelPolicy) {
   return ({ requestContext }: { requestContext: RequestContext }) =>
-    resolveModel(modelId, { remapForCodexOAuth: true, requestContext });
+    resolveModel(modelId, { remapForCodexOAuth: true, requestContext, modelPolicy, role: 'title' });
 }
 
 interface SessionOwnerProfile {
@@ -1376,6 +1378,7 @@ function buildProjectGitRoutes({
   users,
   controller,
   memorySettings,
+  modelPolicy,
   emitAudit,
   sessionRetirement,
   workItems,
@@ -1386,6 +1389,7 @@ function buildProjectGitRoutes({
   users?: SessionOwnerUserProvider;
   controller?: MountedMastraCode['controller'];
   memorySettings: MountGithubRoutesOptions['memorySettings'];
+  modelPolicy?: MastraCodeModelPolicy;
   emitAudit?: AuditEmitter['emit'];
   sessionRetirement?: MountGithubRoutesOptions['sessionRetirement'];
   workItems?: MountGithubRoutesOptions['workItems'];
@@ -1615,7 +1619,7 @@ function buildProjectGitRoutes({
               threadId: thread.id,
               sessionId,
               requestContext,
-              ...(stored?.observerModelId ? { model: titleModel(stored.observerModelId) } : {}),
+              ...(stored?.observerModelId ? { model: titleModel(stored.observerModelId, modelPolicy) } : {}),
             });
             const named = generated ? normalizeSessionTitle(generated) : null;
             if (named) await github.sourceControlStorage.sessions.rename({ sessionId, title: named });

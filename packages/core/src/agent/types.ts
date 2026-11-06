@@ -766,6 +766,15 @@ interface AgentConfigBase<
    */
   model: DynamicArgument<MastraModelConfig | ModelWithRetries[], TRequestContext>;
   /**
+   * Resolve the title model before default or explicit title generation.
+   * Throw to refuse the call. The hook must return a model configuration, not a fallback decision.
+   * Without this hook, title generation retains its existing model selection.
+   */
+  resolveTitleModel?: (
+    model: DynamicArgument<MastraModelConfig, TRequestContext> | undefined,
+    options: { requestContext: RequestContext },
+  ) => MastraModelConfig | Promise<MastraModelConfig>;
+  /**
    * Maximum number of retries for model calls in case of failure.
    * @defaultValue 0
    */
@@ -975,6 +984,8 @@ interface AgentConfigBase<
    * processor workflows (created with `createWorkflow` using `ProcessorStepSchema`).
    */
   inputProcessors?: DynamicArgument<InputProcessorOrWorkflow[], TRequestContext>;
+  /** Allow per-call input processors to replace configured processors. Default: true. */
+  allowInputProcessorOverrides?: boolean;
   /**
    * Output processors that can modify or validate messages from the agent, before it is sent to the client.
    * These can be individual processors (implementing `processOutputResult`, `processOutputStream`, or `processOutputStep`) or
