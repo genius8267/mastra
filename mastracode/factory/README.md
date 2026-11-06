@@ -23,6 +23,28 @@ export function createFactory(storage: MastraFactoryConfig['storage']) {
 }
 ```
 
+## Host-owned model policy
+
+`MastraFactoryConfig.modelPolicy` accepts the same optional policy as the Code SDK.
+Factory also exports `MastraCodeModelPolicy` and `MastraCodeModelRole`.
+
+```typescript
+import { MastraFactory } from '@mastra/factory';
+import type { MastraCodeModelPolicy, MastraFactoryConfig } from '@mastra/factory';
+
+export function createFactory(storage: MastraFactoryConfig['storage'], modelPolicy: MastraCodeModelPolicy) {
+  return new MastraFactory({ storage, modelPolicy });
+}
+```
+
+The policy covers main calls, supported SDK subagents, observers, reflectors, and automatic or explicit session titles.
+Factory keeps its existing disabled-subagent default. It forwards the policy to integration title routes as well as the coding controller.
+Omit the policy to preserve native provider behavior.
+
+The host must resolve and authorize its trusted execution binding for each actual model call.
+Model IDs and guest state do not identify the payer. Return a host-owned model or throw to refuse the call.
+See [the Code SDK policy contract](../sdk/README.md#host-owned-model-policy) for callback types, context rules, and supported configurations.
+
 ## Documentation
 
 A host application calls `MastraFactory.prepare()`, constructs its `Mastra` instance, and then calls `MastraFactory.finalize()`. The `new Mastra(...)` expression must remain in the host entry file so Mastra's deployer can detect and bundle it. The implementation in `mastracode/web/src/mastra/index.ts` is the canonical host example.

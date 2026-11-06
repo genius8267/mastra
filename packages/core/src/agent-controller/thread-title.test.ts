@@ -1,6 +1,7 @@
 import { MockLanguageModelV2, convertArrayToReadableStream } from '@internal/ai-sdk-v5/test';
 import { describe, expect, it, vi } from 'vitest';
 import { Agent } from '../agent';
+import type { AgentConfig } from '../agent';
 import { MockMemory } from '../memory/mock';
 import { RequestContext } from '../request-context';
 import { InMemoryStore } from '../storage/mock';
@@ -41,7 +42,7 @@ function createBrokenModel() {
 }
 
 /** A controller that has taken its first turn, with `titleModel` naming the thread. */
-async function startThread(titleModel: MockLanguageModelV2) {
+async function startThread(titleModel: MockLanguageModelV2, config: Partial<AgentConfig> = {}) {
   const storage = new InMemoryStore();
   const memory = new MockMemory({
     storage,
@@ -53,6 +54,7 @@ async function startThread(titleModel: MockLanguageModelV2) {
     instructions: 'You are a test agent.',
     model: createTextStreamModel('On it.'),
     memory,
+    ...config,
   });
   const controller = new AgentController({
     workspace: createMockWorkspace(),
@@ -86,6 +88,29 @@ async function startNamedThread() {
 }
 
 describe('AgentController thread titles', () => {
+  it.each(['default', 'explicit'] as const)(
+    'enforces the title resolver before a %s model can execute',
+    async source => {
+      const foreignModel = createTextStreamModel('Foreign title');
+      const foreignGenerate = vi.spyOn(foreignModel, 'doGenerate');
+      const policyModel = createTextStreamModel('Authorized title');
+      const { controller, session, memory } = await startThread(foreignModel, {
+        resolveTitleModel: () => policyModel,
+      });
+      // First-turn automatic naming uses Memory. This check targets controller-requested naming.
+      foreignGenerate.mockClear();
+      const title = await controller.generateThreadTitle({
+        threadId: session.thread.getId()!,
+        sessionId: session.identity.getId(),
+        ...(source === 'explicit' ? { model: foreignModel } : {}),
+      });
+
+      expect(title).toBe('Authorized title');
+      expect(foreignGenerate).not.toHaveBeenCalled();
+      expect((await memory.getThreadById({ threadId: session.thread.getId()! }))?.title).toBe('Authorized title');
+    },
+  );
+
   it('names the thread on its first turn and emits thread_title_updated', async () => {
     const { session, events } = await startNamedThread();
 

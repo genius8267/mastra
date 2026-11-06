@@ -140,14 +140,27 @@ export class AuthStorage {
   private data: AuthStorageData = {};
   private refreshPromises = new Map<string, Promise<OAuthCredentials | undefined>>();
 
-  constructor(private authPath: string = join(getAppDataDir(), 'auth.json')) {
-    this.reload();
+  /** Pass null when a host model policy owns credentials. Reads stay empty and editing is unavailable. */
+  constructor(private authPath: string | null = join(getAppDataDir(), 'auth.json')) {
+    if (authPath === null) this.data = Object.create(null) as AuthStorageData;
+    else this.reload();
+  }
+
+  private credentialFilePath(): string {
+    if (this.authPath === null) {
+      throw new Error('Native credential editing is unavailable because the host model policy owns credentials.');
+    }
+    return this.authPath;
   }
 
   /**
    * Reload credentials from disk.
    */
   reload(): void {
+    if (this.authPath === null) {
+      this.data = Object.create(null) as AuthStorageData;
+      return;
+    }
     if (!existsSync(this.authPath)) {
       this.data = {};
       return;
@@ -267,7 +280,8 @@ export class AuthStorage {
    * Save credentials to disk.
    */
   private save(): void {
-    const dir = dirname(this.authPath);
+    const authPath = this.credentialFilePath();
+    const dir = dirname(authPath);
     if (!existsSync(dir)) {
       mkdirSync(dir, { recursive: true, mode: 0o700 });
     }
@@ -275,11 +289,11 @@ export class AuthStorage {
     // fetch wrappers reload this file on every request, including in older
     // Mastra Code processes; writing in place lets them observe truncated JSON
     // and temporarily treat every provider as logged out.
-    const tempPath = `${this.authPath}.${process.pid}.${globalThis.crypto.randomUUID()}.tmp`;
+    const tempPath = `${authPath}.${process.pid}.${globalThis.crypto.randomUUID()}.tmp`;
     try {
       writeFileSync(tempPath, JSON.stringify(this.data, null, 2), { encoding: 'utf-8', mode: 0o600 });
       chmodSync(tempPath, 0o600);
-      renameSync(tempPath, this.authPath);
+      renameSync(tempPath, authPath);
     } finally {
       rmSync(tempPath, { force: true });
     }
@@ -298,6 +312,7 @@ export class AuthStorage {
    * Set credential for a provider.
    */
   set(provider: string, credential: AuthCredential): void {
+    this.credentialFilePath();
     this.reload();
     this.data[provider] = credential;
     this.save();
@@ -310,6 +325,7 @@ export class AuthStorage {
    * provider the caller just signed out.
    */
   remove(provider: string): void {
+    this.credentialFilePath();
     this.reload();
     delete this.data[provider];
     const prefix = this.accountPrefixFor(provider);
@@ -375,6 +391,7 @@ export class AuthStorage {
    * Only sets env vars that aren't already set (env vars take precedence).
    */
   loadStoredApiKeysIntoEnv(providerEnvVars: Record<string, string | undefined>): void {
+    this.credentialFilePath();
     for (const [key, cred] of Object.entries(this.data)) {
       if (!key.startsWith('apikey:') || cred.type !== 'api_key' || !cred.key) continue;
       const provider = key.substring('apikey:'.length);
@@ -396,6 +413,7 @@ export class AuthStorage {
     callbacks: OAuthLoginCallbacks,
     opts?: { replaceAccountId?: string; activate?: boolean },
   ): Promise<OAuthAccountRecord> {
+    this.credentialFilePath();
     const provider = getOAuthProvider(providerId);
     if (!provider) {
       throw new Error(`Unknown OAuth provider: ${providerId}`);
@@ -494,6 +512,7 @@ export class AuthStorage {
     creds: OAuthCredentials,
     opts?: { label?: string; replaceAccountId?: string; activate?: boolean },
   ): Promise<OAuthAccountRecord> {
+    this.credentialFilePath();
     this.reload();
     const entries = this.accountEntries(providerId);
 
@@ -654,6 +673,7 @@ export class AuthStorage {
    * undefined when there is no other entry to rotate to.
    */
   activateAccount(providerId: string, instanceId?: string): OAuthAccountRecord | undefined {
+    this.credentialFilePath();
     this.reload();
     const activated = this.activateInMemory(providerId, instanceId);
     if (activated) this.save();
@@ -721,6 +741,7 @@ export class AuthStorage {
    * is removed too (full sign-out for that provider).
    */
   removeAccount(providerId: string, instanceId: string): void {
+    this.credentialFilePath();
     this.reload();
     const entries = this.accountEntries(providerId);
     const target = entries.find(entry => entry.id === instanceId);
@@ -754,6 +775,7 @@ export class AuthStorage {
    * Rename an account's label.
    */
   renameAccount(providerId: string, instanceId: string, label: string): void {
+    this.credentialFilePath();
     this.reload();
     const key = this.accountKeyFor(instanceId);
     const entry = this.data[key];
@@ -929,6 +951,7 @@ export class AuthStorage {
    * Shares the per-instance refresh dedupe with `getApiKey`.
    */
   async forceRefreshActiveAccount(providerId: string, accountInstanceId?: string): Promise<string | undefined> {
+    this.credentialFilePath();
     this.reload();
     const activeEntry = this.getActiveAccount(providerId);
     const selectedEntry = accountInstanceId

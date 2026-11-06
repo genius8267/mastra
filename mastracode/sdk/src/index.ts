@@ -4,8 +4,12 @@ import { readFile } from 'node:fs/promises';
 import { homedir, hostname } from 'node:os';
 import path from 'node:path';
 
-import type { Agent } from '@mastra/core/agent';
-import { AgentController, migratePersistedModelSelection } from '@mastra/core/agent-controller';
+import type { Agent, AgentConfig } from '@mastra/core/agent';
+import {
+  AGENT_CONTROLLER_SUBAGENT_CONTEXT_KEY,
+  AgentController,
+  migratePersistedModelSelection,
+} from '@mastra/core/agent-controller';
 import type {
   IntervalHandler,
   AgentControllerConfig,
@@ -64,6 +68,8 @@ import {
 } from './agents/credential-resolver.js';
 import { getDynamicInstructions } from './agents/instructions.js';
 import { getDynamicMemory } from './agents/memory.js';
+import { isPolicyModel, resolvePolicyModel } from './agents/model-policy.js';
+import type { MastraCodeModelPolicy } from './agents/model-policy.js';
 import {
   canUseProvider,
   createMastraCodeGateway,
@@ -72,6 +78,7 @@ import {
   resolveModel,
 } from './agents/model.js';
 import { buildMode } from './agents/modes/build.js';
+
 import { fastMode } from './agents/modes/explore.js';
 import { createPlanMode } from './agents/modes/plan.js';
 import {
@@ -292,7 +299,11 @@ function addPluginToolsToModeAllowlists(
   });
 }
 
+export type { MastraCodeModelPolicy, MastraCodeModelRole } from './agents/model-policy.js';
+
 export interface MastraCodeConfig {
+  /** Authorize every native model call through a host-owned model. Omit to preserve native routing. */
+  modelPolicy?: MastraCodeModelPolicy;
   /** Working directory for project detection. Default: process.cwd() */
   cwd?: string;
   /** Home directory for global config discovery. Default: os.homedir() */
@@ -588,6 +599,10 @@ function routesToOtherGateway(
 }
 
 export async function createMastraCodeAgentController(config?: MastraCodeConfig) {
+  const modelPolicy = config?.modelPolicy;
+  if (modelPolicy !== undefined && typeof modelPolicy !== 'function') {
+    throw new Error('Model policy must be a function.');
+  }
   const cwd = config?.cwd ?? process.cwd();
   const homeDir = config?.homeDir ?? config?.initialState?.homeDir;
   const configDir = config?.configDir ?? DEFAULT_CONFIG_DIR;
@@ -622,9 +637,18 @@ export async function createMastraCodeAgentController(config?: MastraCodeConfig)
   }
 
   // Auth storage (shared with Claude Max / OpenAI providers and AgentController)
-  const authStorage = createAuthStorage();
+  const authStorage = modelPolicy ? new AuthStorage(null) : createAuthStorage();
   const globalSettings = loadSettings(config?.settingsPath);
   const experimentalAgent = resolveExperimentalAgent(globalSettings);
+  if (modelPolicy) {
+    if (config?.memory) {
+      throw new Error('Model policy does not support custom memory.');
+    }
+    if (experimentalAgent) throw new Error('Model policy does not support experimental agents.');
+    if (Array.isArray(config?.modes) && config.modes.some(mode => mode.agent)) {
+      throw new Error('Model policy does not support custom mode agents.');
+    }
+  }
   const backgroundToolsEnabled = globalSettings.backgroundTools?.enabled ?? false;
   const storedGatewayKey = authStorage.getStoredApiKey(MASTRA_GATEWAY_PROVIDER);
   const storedGatewayUrl = globalSettings.memoryGateway?.baseUrl;
@@ -633,7 +657,7 @@ export async function createMastraCodeAgentController(config?: MastraCodeConfig)
     process.env['MASTRA_GATEWAY_API_KEY'] ??= storedGatewayKey;
   }
 
-  if (storedGatewayUrl) {
+  if (storedGatewayUrl && !modelPolicy) {
     process.env['MASTRA_GATEWAY_URL'] ??= storedGatewayUrl;
   }
 
@@ -642,7 +666,7 @@ export async function createMastraCodeAgentController(config?: MastraCodeConfig)
   // Skipped in deployed multi-tenant mode: when a per-tenant credential store
   // provider is registered, provider keys are resolved per request and must
   // never leak into process-global env vars.
-  if (!hasCredentialStoreProvider()) {
+  if (!modelPolicy && !hasCredentialStoreProvider()) {
     try {
       const registry = PROVIDER_REGISTRY as Record<string, ProviderConfig>;
       const providerEnvVars: Record<string, string | undefined> = {};
@@ -898,6 +922,7 @@ export async function createMastraCodeAgentController(config?: MastraCodeConfig)
     config?.memory === undefined
       ? getDynamicMemory(storage, vector, config?.settingsPath, {
           disableSettingsOmSeed: config?.disableSettingsOmSeed,
+          modelPolicy: modelPolicy,
         })
       : undefined;
   const memory =
@@ -906,7 +931,9 @@ export async function createMastraCodeAgentController(config?: MastraCodeConfig)
       : (config?.memory ??
         // Keep settled() so shutdown still drains background memory work.
         (dynamicMemory &&
-          Object.assign(withCredentialTenantPreparation(dynamicMemory), { settled: dynamicMemory.settled })));
+          (modelPolicy
+            ? dynamicMemory
+            : Object.assign(withCredentialTenantPreparation(dynamicMemory), { settled: dynamicMemory.settled }))));
 
   // MCP
   const mcpManager = config?.disableMcp
@@ -1342,7 +1369,41 @@ export async function createMastraCodeAgentController(config?: MastraCodeConfig)
       defaultThinkingLevel: hasSessionLevel ? undefined : await config?.resolveDefaultThinkingLevel?.(ctx),
     });
   });
+  const resolveTitleModel: AgentConfig['resolveTitleModel'] = modelPolicy
+    ? async (model, { requestContext }) => {
+        const selected = typeof model === 'function' ? await model({ requestContext }) : model;
+        const controller = requestContext.get('controller') as
+          | AgentControllerRequestContext<MastraCodeState>
+          | undefined;
+        const modelId =
+          typeof selected === 'string'
+            ? selected
+            : selected
+              ? (('id' in selected ? selected.id : undefined) ?? ('modelId' in selected ? selected.modelId : undefined))
+              : model === undefined
+                ? controller?.session?.modelId
+                : undefined;
+        if (typeof modelId !== 'string' || !modelId.trim()) {
+          throw new Error('Model policy requires an identifiable title model.');
+        }
+        return resolvePolicyModel(modelId, 'title', requestContext, modelPolicy);
+      }
+    : undefined;
+  const modelPolicyProcessor: InputProcessor | undefined = modelPolicy
+    ? {
+        id: 'mastracode-model-policy',
+        processLLMRequest: ({ model, requestContext }) => {
+          if (!requestContext) throw new Error('Model policy requires a request context.');
+          const role = requestContext.get(AGENT_CONTROLLER_SUBAGENT_CONTEXT_KEY) ? 'subagent' : 'main';
+          if (!isPolicyModel(model, modelPolicy, role, requestContext)) {
+            throw new Error('Model policy refused an ungoverned model override.');
+          }
+        },
+      }
+    : undefined;
   const baseCodeAgent: Agent = createCodingAgent({
+    ...(resolveTitleModel ? { resolveTitleModel } : {}),
+    ...(modelPolicy ? { allowInputProcessorOverrides: false } : {}),
     id: CODE_AGENT_ID,
     name: 'Code Agent',
     // Workspace is wired per-request at the AgentController level (see
@@ -1386,9 +1447,11 @@ export async function createMastraCodeAgentController(config?: MastraCodeConfig)
     // check (and its error log) and the host thinking lookup on that path, e.g.
     // a host reading the agent's model at startup with an empty request context.
     model: async ctx =>
-      ctx.requestContext.get('controller')
-        ? resolveTenantSessionModel(ctx)
-        : getDynamicModel(ctx, config?.settingsPath, { modeless }),
+      modelPolicy
+        ? getDynamicModel(ctx, config?.settingsPath, { modeless, modelPolicy })
+        : ctx.requestContext.get('controller')
+          ? resolveTenantSessionModel(ctx)
+          : getDynamicModel(ctx, config?.settingsPath, { modeless }),
     // Deferred notifications are re-dispatched by the core notification
     // dispatch workflow long after the originating send; the delivery policy
     // rebuilds the request context (model selection included) at delivery time
@@ -1485,7 +1548,9 @@ export async function createMastraCodeAgentController(config?: MastraCodeConfig)
       // judge model is configured, keeping the goal step a no-op. Bind the same
       // `settingsPath` used above so the judge model and `maxRuns` come from one
       // config (a custom settings file would otherwise diverge).
-      judge: withCredentialTenantPreparation(ctx => getGoalJudgeModel(ctx, config?.settingsPath)),
+      judge: modelPolicy
+        ? ctx => getGoalJudgeModel(ctx, config?.settingsPath, modelPolicy)
+        : withCredentialTenantPreparation(ctx => getGoalJudgeModel(ctx, config?.settingsPath)),
       maxRuns: globalSettings.models.goalMaxTurns ?? 50,
       maxSteps: 1000,
       prompt: DEFAULT_GOAL_JUDGE_PROMPT,
@@ -1503,9 +1568,10 @@ export async function createMastraCodeAgentController(config?: MastraCodeConfig)
         // Input-lane notice ONLY (no processAPIError — see the class doc): the
         // runner walks input processors first in runProcessAPIError, so an
         // input-lane processAPIError would rotate before transient retries run.
-        new AccountStartNoticeProcessor({ credentialStore: authStorage }),
+        ...(modelPolicy ? [] : [new AccountStartNoticeProcessor({ credentialStore: authStorage })]),
         ...readPluginProcessors().input.map(entry => entry.value),
         ...(pluginSignalLane?.getInputProcessors() ?? []),
+        ...(modelPolicyProcessor ? [modelPolicyProcessor] : []),
       ];
       if (typeof config?.inputProcessors !== 'function') return resolveProcessors([]);
       const configured = config.inputProcessors({ requestContext });
@@ -1565,15 +1631,18 @@ export async function createMastraCodeAgentController(config?: MastraCodeConfig)
       // means StreamErrorRetryProcessor already spent its budget, which is the
       // hop condition; quota/auth errors were never transient-matched and
       // rotate immediately.
-      new AccountRotationProcessor({
-        credentialStore: authStorage,
-        // Same budget core enforces (maxProcessorRetries below): past it, core
-        // discards retry:true, so the processor no-ops instead of rotating.
-        maxProcessorRetries: MASTRACODE_MAX_PROCESSOR_RETRIES,
-        settingsPath: config?.settingsPath,
-        modeless,
-        resolveDefaultThinkingLevel: config?.resolveDefaultThinkingLevel,
-      }),
+      ...(modelPolicy
+        ? []
+        : [
+            new AccountRotationProcessor({
+              credentialStore: authStorage,
+              // Core discards retry:true after this shared retry budget.
+              maxProcessorRetries: MASTRACODE_MAX_PROCESSOR_RETRIES,
+              settingsPath: config?.settingsPath,
+              modeless,
+              resolveDefaultThinkingLevel: config?.resolveDefaultThinkingLevel,
+            }),
+          ]),
     ],
     // Individual processors have tighter limits; this remains a defensive
     // ceiling for custom/plugin processors that might retry indefinitely.
@@ -1614,7 +1683,7 @@ export async function createMastraCodeAgentController(config?: MastraCodeConfig)
       handler: () => syncGateways(),
     },
   ];
-  const intervalHandlers = config?.intervalHandlers ?? defaultIntervalHandlers;
+  const intervalHandlers = config?.intervalHandlers ?? (modelPolicy ? [] : defaultIntervalHandlers);
 
   // Build lightweight provider access for resolving built-in packs at startup.
   // Anthropic/OpenAI use AuthStorage; other providers use env API keys.
@@ -1794,7 +1863,11 @@ export async function createMastraCodeAgentController(config?: MastraCodeConfig)
       defaultObserverModelId: DEFAULT_OM_MODEL_ID,
       reflectorModel: 'auto',
       defaultReflectorModelId: DEFAULT_OM_MODEL_ID,
-      resolveAutoModelId: ({ currentModelId }) => resolveAutoOMModelId(currentModelId, canUseProvider),
+      resolveAutoModelId: ({ currentModelId }) => {
+        if (!modelPolicy) return resolveAutoOMModelId(currentModelId, canUseProvider);
+        if (!currentModelId) throw new Error('Model policy requires a selected model for automatic memory.');
+        return currentModelId;
+      },
     },
     agent: codeAgent,
     subagents,
@@ -1804,20 +1877,22 @@ export async function createMastraCodeAgentController(config?: MastraCodeConfig)
     // Ids the model router would hand to another registered gateway (by
     // prefix or `handlesModel`) stay strings so that gateway resolves them.
     resolveSubagentModel: (modelId, { requestContext }) =>
-      routesToOtherGateway(
-        modelId,
-        Object.values(controller.getMastra()?.listGateways() ?? {}),
-        new Set([
-          mastraCodeGateway.id,
-          amazonBedrockGateway.id,
-          googleVertexGateway.id,
-          githubCopilotGateway.id,
-          'models.dev',
-        ]),
-      )
-        ? modelId
-        : resolveModel(modelId, { requestContext }),
-    gateways: [amazonBedrockGateway, googleVertexGateway, githubCopilotGateway, mastraCodeGateway],
+      modelPolicy
+        ? resolvePolicyModel(modelId, 'subagent', requestContext, modelPolicy)
+        : routesToOtherGateway(
+              modelId,
+              Object.values(controller.getMastra()?.listGateways() ?? {}),
+              new Set([
+                mastraCodeGateway.id,
+                amazonBedrockGateway.id,
+                googleVertexGateway.id,
+                githubCopilotGateway.id,
+                'models.dev',
+              ]),
+            )
+          ? modelId
+          : resolveModel(modelId, { requestContext }),
+    gateways: modelPolicy ? [] : [amazonBedrockGateway, googleVertexGateway, githubCopilotGateway, mastraCodeGateway],
     workspace: config?.workspace ?? defaultWorkspace,
     browser: config?.browser,
     idGenerator: config?.idGenerator,
@@ -1956,7 +2031,10 @@ export async function createMastraCodeAgentController(config?: MastraCodeConfig)
     pluginTools,
     signalsPubSub,
     authStorage,
-    resolveModel,
+    resolveModel: modelPolicy
+      ? (modelId: string, options?: Parameters<typeof resolveModel>[1]) =>
+          resolveModel(modelId, { ...options, modelPolicy })
+      : resolveModel,
     storageWarning,
     observabilityWarning,
     builtinOmPacks,

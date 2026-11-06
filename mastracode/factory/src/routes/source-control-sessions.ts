@@ -1,4 +1,4 @@
-import type { MountedMastraCode } from '@mastra/code-sdk';
+import type { MastraCodeModelPolicy, MountedMastraCode } from '@mastra/code-sdk';
 import { resolveModel } from '@mastra/code-sdk/agents/model';
 import { RequestContext } from '@mastra/core/request-context';
 import type { ApiRoute, IUserProvider } from '@mastra/core/server';
@@ -58,6 +58,7 @@ interface SessionOwnerProfile {
 type SessionOwnerUserProvider = Pick<IUserProvider, 'getUser'> & Partial<Pick<IUserProvider, 'getUsers'>>;
 
 export interface SourceControlSessionRoutesOptions {
+  modelPolicy?: MastraCodeModelPolicy;
   auth: RouteAuth;
   sourceControls: readonly SourceControlStorageHandle[];
   projects: Pick<FactoryProjectsStorage, 'get'>;
@@ -324,9 +325,9 @@ const OWNER_CONFLICT_MESSAGES = {
   branch_owned: 'You already have a session on this branch',
 } as const;
 
-function titleModel(modelId: string) {
+function titleModel(modelId: string, modelPolicy?: MastraCodeModelPolicy) {
   return ({ requestContext }: { requestContext: RequestContext }) =>
-    resolveModel(modelId, { remapForCodexOAuth: true, requestContext });
+    resolveModel(modelId, { remapForCodexOAuth: true, requestContext, modelPolicy, role: 'title' });
 }
 
 function createSessionOwnerProfileResolver(users: SessionOwnerUserProvider | undefined) {
@@ -917,7 +918,7 @@ export function buildSourceControlSessionRoutes(options: SourceControlSessionRou
               threadId: thread.id,
               sessionId,
               requestContext,
-              ...(stored?.observerModelId ? { model: titleModel(stored.observerModelId) } : {}),
+              ...(stored?.observerModelId ? { model: titleModel(stored.observerModelId, options.modelPolicy) } : {}),
             });
             const named = generated ? normalizeSessionTitle(generated) : null;
             if (named) await match.sourceControl.sessions.rename({ sessionId, title: named });

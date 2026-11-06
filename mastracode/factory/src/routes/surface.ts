@@ -1,3 +1,4 @@
+import type { MastraCodeModelPolicy } from '@mastra/code-sdk';
 import type { AuthStorage } from '@mastra/code-sdk/auth/storage';
 import type { MastraCodeState } from '@mastra/code-sdk/schema';
 import type { AgentController } from '@mastra/core/agent-controller';
@@ -95,6 +96,7 @@ export interface IntegrationRegistration {
 }
 
 export interface FactoryApiRoutesDeps {
+  modelPolicy?: MastraCodeModelPolicy;
   controllerId: string;
   controller: AgentController<MastraCodeState>;
   /** Registry of the sessions this process holds, owned by the host so it can watch them too. */
@@ -465,6 +467,7 @@ export function buildIntegrationContext(
   deps: Pick<
     FactoryApiRoutesDeps,
     | 'controller'
+    | 'modelPolicy'
     | 'publicOrigin'
     | 'auth'
     | 'sandbox'
@@ -502,6 +505,7 @@ export function buildIntegrationContext(
     factoryStorage: deps.factoryStorage,
     baseUrl: deps.publicOrigin,
     controller: deps.controller,
+    modelPolicy: deps.modelPolicy,
     stateSigner: deps.stateSigner,
     storage: {
       generic: deps.integrationStorage.forIntegration(integrationId),
@@ -689,6 +693,7 @@ export function assembleFactoryApiRoutes(deps: FactoryApiRoutesDeps): ApiRoute[]
           projects: deps.domains.projects,
           ...(deps.users ? { users: deps.users } : {}),
           controller: deps.controller,
+          modelPolicy: deps.modelPolicy,
           audit: deps.audit,
           memorySettings: deps.domains.memorySettings,
           sessionRetirement: deps.sessionRetirement,

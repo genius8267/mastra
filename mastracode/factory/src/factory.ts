@@ -21,6 +21,7 @@
 
 import { MastraAuthStudio } from '@mastra/auth-studio';
 import { prepareAgentControllerMount } from '@mastra/code-sdk';
+import type { MastraCodeModelPolicy } from '@mastra/code-sdk';
 import { getDynamicMemory } from '@mastra/code-sdk/agents/memory';
 import type { MastraCodeState } from '@mastra/code-sdk/schema';
 import type { AgentControllerRequestContext, BuiltinToolId } from '@mastra/core/agent-controller';
@@ -178,6 +179,8 @@ type BuildApiRoutesDeps = Pick<FactoryApiRoutesDeps, 'controller' | 'authStorage
 export type MastraArgs = NonNullable<ConstructorParameters<typeof Mastra>[0]>;
 
 export interface MastraFactoryConfig {
+  /** Host-owned authorization and model implementation for every native model call. */
+  modelPolicy?: MastraCodeModelPolicy;
   /**
    * Auth provider instance — `MastraAuthStudio` (`@mastra/auth-studio`),
    * `MastraAuthWorkos` (`@mastra/auth-workos`), `MastraAuthBetterAuth`
@@ -520,6 +523,9 @@ export class MastraFactory {
           "new PgFactoryStorage({ connectionString }) from '@mastra/pg' for deployments, or " +
           "new LibSQLFactoryStorage({ url }) from '@mastra/libsql' for local dev.",
       );
+    }
+    if (config.modelPolicy !== undefined && typeof config.modelPolicy !== 'function') {
+      throw new Error('Model policy must be a function.');
     }
     this.#boards = createBoardRegistry({
       boards: config.boards,
@@ -898,7 +904,9 @@ export class MastraFactory {
           const memory = await mastraStorage.getStore('memory');
           if (!memory) return false;
           // The sessions' own Memory, so a moved thread takes its observation vectors along.
-          const sessionMemory = getDynamicMemory(mastraStorage, vector);
+          const sessionMemory = getDynamicMemory(mastraStorage, vector, undefined, {
+            modelPolicy: this.#config.modelPolicy,
+          });
           const report = await migrateSessionResources({
             sessions: sourceControlStorage,
             workItems: workItemsStorage,
@@ -1383,6 +1391,7 @@ export class MastraFactory {
     const prepared = await timedPhase('prepare.controllerMount', () =>
       prepareAgentControllerMount({
         controllerId: CONTROLLER_ID,
+        modelPolicy: this.#config.modelPolicy,
         browser: this.#config.browser,
         coAuthor: { name: 'mastra-platform[bot]' },
         ...(this.#config.disableBuiltinTools?.length ? { disableBuiltinTools: this.#config.disableBuiltinTools } : {}),
@@ -1789,6 +1798,7 @@ export class MastraFactory {
           ...assembleFactoryApiRoutes({
             controllerId: CONTROLLER_ID,
             controller,
+            modelPolicy: this.#config.modelPolicy,
             liveSessions: liveSessionsTouchingTheFeed(controller, eventBus),
             auth: routeAuth,
             ...(auth && isUserProvider(auth) ? { users: auth } : {}),
@@ -1801,7 +1811,9 @@ export class MastraFactory {
             sessionRetirement,
             moveThread: async ({ threadId, resourceId }) => {
               // The sessions' own Memory, so a moved thread takes its observation vectors along.
-              const sessionMemory = getDynamicMemory(storage.getMastraStorage(), vector);
+              const sessionMemory = getDynamicMemory(storage.getMastraStorage(), vector, undefined, {
+                modelPolicy: this.#config.modelPolicy,
+              });
               await sessionMemory({ requestContext: new RequestContext() }).updateThreadResourceId({
                 threadId,
                 resourceId,
@@ -2077,6 +2089,7 @@ export class MastraFactory {
       const context = buildIntegrationContext(
         {
           controller: prepared.base.controller,
+          modelPolicy: this.#config.modelPolicy,
           publicOrigin,
           auth: routeAuth,
           stateSigner,
@@ -2114,6 +2127,7 @@ export class MastraFactory {
       const context = buildIntegrationContext(
         {
           controller: prepared.base.controller,
+          modelPolicy: this.#config.modelPolicy,
           publicOrigin,
           auth: routeAuth,
           stateSigner,
@@ -2148,6 +2162,7 @@ export class MastraFactory {
           buildIntegrationContext(
             {
               controller: prepared.base.controller,
+              modelPolicy: this.#config.modelPolicy,
               publicOrigin,
               auth: routeAuth,
               stateSigner,

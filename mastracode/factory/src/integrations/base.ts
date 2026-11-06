@@ -83,6 +83,8 @@ export interface IntegrationPostToolContext {
  * Built once per boot in `MastraFactory.prepare()`.
  */
 export interface IntegrationContext {
+  /** Host policy for independent model calls, including explicit thread titles. */
+  modelPolicy?: MastraCodeConfig['modelPolicy'];
   /** Host auth seam — integration routes resolve callers through this. */
   auth: RouteAuth;
   /** Optional user directory for resolving persisted user ids to display profiles. */

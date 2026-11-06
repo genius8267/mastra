@@ -1,3 +1,4 @@
+import { MockLanguageModelV2, convertArrayToReadableStream } from '@internal/ai-sdk-v5/test';
 import { describe, expect, it } from 'vitest';
 import type { Processor } from '../../processors/index';
 import { isProcessorWorkflow } from '../../processors/index';
@@ -110,4 +111,82 @@ describe('LLM request lane listing', () => {
     expect(laneIds).toEqual([...new Set(laneIds)]);
     expect(inputIds).not.toContain('provider-history-compat');
   });
+});
+
+describe('input processor override policy', () => {
+  it.each([null, 0, 'false'])('refuses a malformed processor-override setting', value => {
+    expect(() => makeAgent({ allowInputProcessorOverrides: value })).toThrow(
+      'The input processor override setting must be a boolean.',
+    );
+  });
+
+  it.each([null, false, 'native'])('refuses a malformed title-model resolver', value => {
+    expect(() => makeAgent({ resolveTitleModel: value })).toThrow('The title model resolver must be a function.');
+  });
+
+  it.each([
+    { stream: false, locked: true, replace: true },
+    { stream: true, locked: true, replace: true },
+    { stream: false, locked: false, replace: true },
+    { stream: true, locked: false, replace: true },
+    { stream: false, locked: true, replace: false },
+    { stream: true, locked: true, replace: false },
+  ])(
+    'keeps configured input processors when replacements are disabled (stream=$stream, locked=$locked, replace=$replace)',
+    async ({ stream, locked, replace }) => {
+      let providerCalls = 0;
+      const text = 'Processor override reached the model';
+      const model = new MockLanguageModelV2({
+        doGenerate: async () => {
+          providerCalls++;
+          return {
+            content: [{ type: 'text', text }],
+            finishReason: 'stop',
+            warnings: [],
+            usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+          };
+        },
+        doStream: async () => {
+          providerCalls++;
+          return {
+            stream: convertArrayToReadableStream([
+              { type: 'stream-start', warnings: [] },
+              { type: 'text-start', id: 'text' },
+              { type: 'text-delta', id: 'text', delta: text },
+              { type: 'text-end', id: 'text' },
+              { type: 'finish', finishReason: 'stop', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } },
+            ]),
+          };
+        },
+      });
+      const agent = new Agent({
+        id: 'processor-policy-agent',
+        name: 'Processor policy agent',
+        instructions: 'Answer.',
+        model,
+        inputProcessors: [
+          {
+            id: 'configured-policy',
+            processLLMRequest: () => {
+              throw new Error('Configured input policy ran');
+            },
+          },
+        ],
+        ...(locked ? { allowInputProcessorOverrides: false } : {}),
+      });
+      const options = replace ? { inputProcessors: [] } : undefined;
+      const operation = stream
+        ? agent.stream('Synthetic request', options).then(result => result.text)
+        : agent.generate('Synthetic request', options).then(result => result.text);
+      if (locked) {
+        await expect(operation).rejects.toThrow(
+          replace ? 'Input processor overrides are disabled for this agent.' : 'Configured input policy ran',
+        );
+        expect(providerCalls).toBe(0);
+      } else {
+        expect(await operation).toBe(text);
+        expect(providerCalls).toBe(1);
+      }
+    },
+  );
 });

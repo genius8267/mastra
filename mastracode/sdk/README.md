@@ -24,6 +24,53 @@ const { mastra, controller } = await mountAgentControllerOnMastra({
 });
 ```
 
+### Host-owned model policy
+
+Set `modelPolicy` to authorize native model calls with your own model implementation. Omit it to retain native routing.
+
+```ts
+import { createMastraCodeAgentController } from '@mastra/code-sdk';
+import type { MastraCodeModelPolicy } from '@mastra/code-sdk';
+
+// These host functions belong to your application, not the SDK.
+const modelPolicy: MastraCodeModelPolicy = async ({ modelId, role, requestContext }) => {
+  const binding = await host.resolveExecutionBinding(requestContext);
+  await host.authorizeModelCall({ binding, modelId, role });
+  return host.createModel({ binding, modelId, role });
+};
+
+const { controller } = await createMastraCodeAgentController({ modelPolicy });
+```
+
+The callback returns a host-owned AI SDK V2, V3, or V4 model. Its public return type is `GatewayLanguageModel` from `@mastra/core/llm`.
+The exported `MastraCodeModelRole` type contains `main`, `subagent`, `observer`, `reflector`, and `title`. Goal judges use `main`.
+
+The SDK calls the policy for each actual generation or stream, including retries. It does not reuse an earlier authorization decision.
+A policy error or invalid result refuses the call. The SDK does not substitute native providers, credentials, or custom-provider defaults.
+Native ordered model fallbacks and account rotation do not apply to this configuration. The host owns fallback decisions.
+
+For automatic memory selection, the SDK submits the selected main model ID with the observer, reflector, or title role.
+It does not select an automatic native memory provider. The host can choose a different implementation for each role.
+Both automatic titles and explicit title overrides use the policy. A foreign title model supplies identity only and cannot execute directly.
+Models without an identifiable ID are refused. Media is inlined rather than resolved through a separate provider-metadata lookup.
+
+The host must resolve its trusted execution binding and authorize every call. Reject missing, ambiguous, or revoked bindings.
+Treat model IDs, controller state, and guest request fields as selections, not billing or authorization authority.
+A host can close over immutable authority or place its own binding in the request context. Do not put secrets in that context.
+
+Core copies caller context entries into both forked and non-forked subagents. It preserves host binding entries.
+Forks use the cloned thread. Non-forked subagents omit the parent thread and memory resource.
+`AGENT_CONTROLLER_SUBAGENT_CONTEXT_KEY` and `AgentControllerSubagentContext` are exported from `@mastra/core/agent-controller`.
+That context value contains `{ agentType, forked }`. It identifies the operation, not its authorization authority.
+
+The policy owns model credentials. The SDK does not open global credential files or register a global credential store in this mode.
+Local credential reads return empty results. Local provider sign-in, credential editing, account rotation, and credential export refuse explicitly.
+Factory identity verification and separate tenant-credential administration retain their existing access checks.
+
+Custom memory, custom mode agents, and experimental agent engines are refused when this policy is configured.
+Per-call input-processor replacements are also refused. Configure input extensions through `MastraCodeConfig.inputProcessors` instead.
+Application tools and custom processors remain trusted host code. They must not make separate, ungoverned model calls.
+
 ### Plugin background execution
 
 With the experimental `backgroundTools.enabled` setting on, plugin tools are eligible for native background execution only when they declare their own configuration:
